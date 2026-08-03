@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.env
+venv/
+node_modules/
+dist/
+build/
+/.idea/
+/.vscode/
+*.sqlite3
+*.log
+/.DS_Store
+coverage/
+env/
+/.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Docker
+docker-compose.override.yml
