@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 async def log_requests_middleware(request: Request, call_next):
     """Middleware to log all incoming requests."""
-    
+
     start_time = time.time()
 
     logger.info(f"{request.method} {request.url.path}")

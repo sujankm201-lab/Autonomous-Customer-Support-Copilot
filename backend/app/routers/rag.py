@@ -54,7 +54,7 @@ async def query_knowledge_base(
             query=result.query,
         )
     except Exception as e:
-        logger.error(f"Error querying RAG: {str(e)}")
+        logger.exception("Error querying RAG")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error processing query"
@@ -68,7 +68,7 @@ async def get_rag_stats(current_user: dict = Depends(get_current_user)):
         stats = get_rag_pipeline().get_stats()
         return stats
     except Exception as e:
-        logger.error(f"Error getting RAG stats: {str(e)}")
+        logger.exception("Error getting RAG stats")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving statistics"
@@ -93,10 +93,10 @@ async def index_documents(
         num_indexed = get_rag_pipeline().index_from_directory(directory)
         return {"message": f"Indexed {num_indexed} chunks", "chunks_indexed": num_indexed}
     except Exception as e:
-        logger.error(f"Error indexing documents: {str(e)}")
+        logger.exception("Error indexing documents")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error indexing documents"
+            detail=str(e)
         )
 
 
@@ -115,7 +115,7 @@ async def clear_knowledge_base(current_user: dict = Depends(get_current_user)):
         get_rag_pipeline().clear_knowledge_base()
         return {"message": "Knowledge base cleared"}
     except Exception as e:
-        logger.error(f"Error clearing knowledge base: {str(e)}")
+        logger.exception("Error clearing knowledge base")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error clearing knowledge base"

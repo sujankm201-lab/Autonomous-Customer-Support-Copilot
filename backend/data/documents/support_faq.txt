@@ -1,0 +1,27 @@
+Customer Support Knowledge Base
+
+Login Issues
+-------------
+If a user cannot log in after resetting their password:
+1. Ensure the new password is entered correctly.
+2. Clear the browser cache and cookies.
+3. Try using an incognito/private window.
+4. If the issue persists, reset the password again.
+5. Contact support if the account remains locked.
+
+Password Reset
+--------------
+Password reset emails usually arrive within 5 minutes.
+Check the spam folder if the email is not received.
+
+Account Locked
+--------------
+Accounts are locked after five failed login attempts.
+Users should wait 15 minutes before trying again or contact support.
+
+Contact Support
+---------------
+Email: support@example.com
+Business Hours:
+Monday to Friday
+9:00 AM to 6:00 PM
