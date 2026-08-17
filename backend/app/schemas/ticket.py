@@ -16,3 +16,8 @@ class TicketOut(BaseModel):
     status: str
     user_id: str
     created_at: datetime
+
+    # Smart Ticket Routing fields
+    intent: str
+    confidence: float
+    department: str

@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .db import connect_db, close_db
-from .routers import auth, users, tickets, chat, admin, rag
+from .routers import auth, users, tickets, chat, admin, rag, intent
 from .middleware import log_requests_middleware
 from .exceptions import setup_exception_handlers
 from .logging_config import setup_logging
@@ -41,6 +41,7 @@ app.include_router(tickets.router)
 app.include_router(chat.router)
 app.include_router(admin.router)
 app.include_router(rag.router)
+app.include_router(intent.router)
 
 
 @app.on_event("startup")
