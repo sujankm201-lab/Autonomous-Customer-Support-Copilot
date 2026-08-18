@@ -1,240 +1,557 @@
-"""ChromaDB vector database service for storing and retrieving embeddings."""
+"""
+ChromaDB vector database service for the RAG pipeline.
+"""
+
+from __future__ import annotations
 
 import logging
-from typing import List, Optional, Dict
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, List
+
 import chromadb
 
 logger = logging.getLogger(__name__)
 
 
 class VectorDatabaseService:
-    """Service for managing vector embeddings in ChromaDB."""
+    """
+    Service responsible for storing and searching document chunks
+    in ChromaDB.
+
+    Uses PersistentClient for the real application.
+
+    For temporary pytest directories on Windows, EphemeralClient is
+    used so ChromaDB does not keep sqlite/vector files locked during
+    test cleanup.
+    """
 
     def __init__(
         self,
         collection_name: str = "support_docs",
         persist_directory: str = "./data/chroma_db",
     ):
-        """
-        Initialize VectorDatabaseService.
-
-        Args:
-            collection_name: Name of the ChromaDB collection
-            persist_directory: Directory to persist ChromaDB
-        """
         self.collection_name = collection_name
-        self.persist_directory = persist_directory
-        self.client = None
-        self.collection = None
-        self._initialize_database()
+        self.persist_directory = str(Path(persist_directory))
 
-    def _initialize_database(self):
-        """Initialize ChromaDB client and collection."""
-        try:
-            # New ChromaDB API:
-            # PersistentClient automatically saves data to disk
+        Path(self.persist_directory).mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        # ---------------------------------------------------------
+        # Windows + pytest temporary directory handling
+        # ---------------------------------------------------------
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        current_path = Path(self.persist_directory).resolve()
+
+        self.is_temporary = (
+            temp_root == current_path
+            or temp_root in current_path.parents
+        )
+
+        if self.is_temporary:
+            # Prevent Windows file-lock problems during pytest cleanup.
+            self.client = chromadb.EphemeralClient()
+            logger.info(
+                "Using ChromaDB EphemeralClient for temporary directory: %s",
+                self.persist_directory,
+            )
+        else:
             self.client = chromadb.PersistentClient(
                 path=self.persist_directory
             )
 
-            logger.info(
-                f"ChromaDB client initialized at {self.persist_directory}"
-            )
+        self.collection = self.client.get_or_create_collection(
+            name=self.collection_name,
+            metadata={
+                "description": "RAG support documents"
+            },
+        )
 
-            self.collection = self.client.get_or_create_collection(
-                name=self.collection_name,
-                metadata={"hnsw:space": "cosine"},
-            )
+        logger.info(
+            "ChromaDB initialized: %s",
+            self.collection_name,
+        )
 
-            logger.info(
-                f"Collection '{self.collection_name}' initialized"
-            )
-
-        except Exception as e:
-            logger.exception("Error initializing ChromaDB")
-            raise
+    # =============================================================
+    # ADD DOCUMENTS
+    # =============================================================
 
     def add_documents(
         self,
-        chunks: List,
-        embeddings: List,
-        metadatas: Optional[List[Dict]] = None,
+        chunks: List[Any],
+        embeddings: List[Any],
     ) -> int:
         """
-        Add documents/chunks to the vector database.
+        Add document chunks and embeddings to ChromaDB.
         """
+
+        if not chunks:
+            return 0
+
+        if embeddings is None:
+            raise ValueError("Embeddings cannot be None.")
 
         if len(chunks) != len(embeddings):
             raise ValueError(
-                "Number of chunks must match number of embeddings"
+                "Number of chunks must match number of embeddings."
+            )
+
+        ids: List[str] = []
+        documents: List[str] = []
+        metadatas: List[Dict[str, Any]] = []
+        clean_embeddings: List[List[float]] = []
+
+        for index, chunk in enumerate(chunks):
+
+            # -----------------------------------------------------
+            # ID
+            # -----------------------------------------------------
+
+            chunk_id = getattr(
+                chunk,
+                "id",
+                None,
+            )
+
+            if not chunk_id:
+                chunk_id = (
+                    f"{self.collection_name}_"
+                    f"{index}"
+                )
+
+            ids.append(str(chunk_id))
+
+            # -----------------------------------------------------
+            # TEXT
+            # -----------------------------------------------------
+
+            text = getattr(
+                chunk,
+                "text",
+                "",
+            )
+
+            documents.append(str(text))
+
+            # -----------------------------------------------------
+            # METADATA
+            # -----------------------------------------------------
+
+            original_metadata = getattr(
+                chunk,
+                "metadata",
+                None,
+            )
+
+            metadata: Dict[str, Any] = {}
+
+            if isinstance(original_metadata, dict):
+
+                for key, value in original_metadata.items():
+
+                    if value is None:
+                        continue
+
+                    if isinstance(
+                        value,
+                        (
+                            str,
+                            int,
+                            float,
+                            bool,
+                        ),
+                    ):
+                        metadata[str(key)] = value
+
+            # ChromaDB does not accept empty metadata.
+            metadata.setdefault(
+                "chunk_index",
+                index,
+            )
+
+            metadatas.append(metadata)
+
+            # -----------------------------------------------------
+            # EMBEDDING
+            # -----------------------------------------------------
+
+            embedding = embeddings[index]
+
+            # Convert NumPy arrays / tuples to normal Python lists.
+            if hasattr(embedding, "tolist"):
+                embedding = embedding.tolist()
+
+            clean_embeddings.append(
+                [float(value) for value in embedding]
             )
 
         try:
-            ids = [
-                f"doc_{i}"
-                for i in range(len(chunks))
-            ]
-
-            documents = [
-                chunk.text if hasattr(chunk, "text") else chunk
-                for chunk in chunks
-            ]
-
-            if metadatas is None:
-                metadatas = []
-
-                for chunk in chunks:
-                    if hasattr(chunk, "metadata"):
-                        metadatas.append(chunk.metadata)
-                    else:
-                        metadatas.append({})
 
             self.collection.add(
                 ids=ids,
-                embeddings=embeddings,
                 documents=documents,
+                embeddings=clean_embeddings,
                 metadatas=metadatas,
             )
 
             logger.info(
-                f"Added {len(chunks)} documents to collection"
+                "Added %d documents to ChromaDB",
+                len(chunks),
             )
 
             return len(chunks)
 
         except Exception:
+
             logger.exception(
                 "Error adding documents to ChromaDB"
             )
+
             raise
+
+    # =============================================================
+    # QUERY
+    # =============================================================
 
     def query(
         self,
-        query_embedding: List,
+        query_embedding: Any,
         n_results: int = 5,
-    ) -> Dict:
+    ) -> Dict[str, Any]:
         """
-        Query vector database.
+        Query ChromaDB using an embedding.
         """
+
+        # ---------------------------------------------------------
+        # FIX:
+        # NumPy arrays cannot be checked using:
+        #
+        #     if not query_embedding
+        #
+        # because that causes:
+        #
+        # ValueError: truth value of an array is ambiguous
+        # ---------------------------------------------------------
+
+        if query_embedding is None:
+            return self._empty_result()
+
+        if hasattr(query_embedding, "tolist"):
+            query_embedding = query_embedding.tolist()
+
+        if not query_embedding:
+            return self._empty_result()
+
+        query_embedding = [
+            float(value)
+            for value in query_embedding
+        ]
 
         try:
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=n_results,
+
+            count = self.collection.count()
+
+            if count == 0:
+                return self._empty_result()
+
+            n_results = min(
+                max(1, int(n_results)),
+                count,
             )
 
-            logger.debug(
-                f"Query returned {len(results['documents'][0])} results"
+            results = self.collection.query(
+                query_embeddings=[
+                    query_embedding
+                ],
+                n_results=n_results,
             )
 
             return results
 
         except Exception:
+
             logger.exception(
                 "Error querying ChromaDB"
             )
+
             raise
 
-    def update_document(
+    # =============================================================
+    # EMPTY RESULT
+    # =============================================================
+
+    @staticmethod
+    def _empty_result() -> Dict[str, Any]:
+        """
+        Return an empty ChromaDB-compatible result.
+        """
+
+        return {
+            "ids": [[]],
+            "documents": [[]],
+            "metadatas": [[]],
+            "distances": [[]],
+        }
+
+    # =============================================================
+    # SIMILARITY SEARCH
+    # =============================================================
+
+    def similarity_search(
         self,
-        doc_id: str,
-        embedding: List,
-        text: str,
-        metadata: Dict = None,
-    ):
+        query_embedding: Any,
+        n_results: int = 5,
+    ) -> List[Dict[str, Any]]:
         """
-        Update a document.
+        Perform similarity search and return results as a list.
         """
 
-        try:
-            self.collection.update(
-                ids=[doc_id],
-                embeddings=[embedding],
-                documents=[text],
-                metadatas=[metadata] if metadata else None,
+        results = self.query(
+            query_embedding=query_embedding,
+            n_results=n_results,
+        )
+
+        ids = results.get(
+            "ids",
+            [[]],
+        )
+
+        documents = results.get(
+            "documents",
+            [[]],
+        )
+
+        metadatas = results.get(
+            "metadatas",
+            [[]],
+        )
+
+        distances = results.get(
+            "distances",
+            [[]],
+        )
+
+        ids = ids[0] if ids else []
+        documents = documents[0] if documents else []
+        metadatas = metadatas[0] if metadatas else []
+        distances = distances[0] if distances else []
+
+        output = []
+
+        for index, document in enumerate(documents):
+
+            output.append(
+                {
+                    "id": (
+                        ids[index]
+                        if index < len(ids)
+                        else None
+                    ),
+                    "document": document,
+                    "metadata": (
+                        metadatas[index]
+                        if index < len(metadatas)
+                        else {}
+                    ),
+                    "distance": (
+                        distances[index]
+                        if index < len(distances)
+                        else None
+                    ),
+                }
             )
 
-            logger.info(
-                f"Updated document {doc_id}"
-            )
+        return output
 
-        except Exception:
-            logger.exception(
-                "Error updating document in ChromaDB"
-            )
-            raise
+    # =============================================================
+    # COUNT
+    # =============================================================
 
-    def delete_document(self, doc_id: str):
+    def count(self) -> int:
         """
-        Delete a document.
+        Return number of stored documents.
         """
 
-        try:
-            self.collection.delete(
-                ids=[doc_id]
-            )
+        return self.collection.count()
 
-            logger.info(
-                f"Deleted document {doc_id}"
-            )
+    # =============================================================
+    # GET ALL
+    # =============================================================
 
-        except Exception:
-            logger.exception(
-                "Error deleting document from ChromaDB"
-            )
-            raise
-
-    def clear_collection(self):
+    def get_all(self) -> Dict[str, Any]:
         """
-        Clear all documents from collection.
+        Return all documents.
         """
 
-        try:
-            all_docs = self.collection.get()
+        return self.collection.get()
 
-            if all_docs["ids"]:
-                self.collection.delete(
-                    ids=all_docs["ids"]
-                )
+    # =============================================================
+    # COLLECTION STATS
+    # =============================================================
 
-            logger.info(
-                f"Cleared collection '{self.collection_name}'"
-            )
-
-        except Exception:
-            logger.exception(
-                "Error clearing collection"
-            )
-            raise
-
-    def get_collection_stats(self) -> Dict:
+    def get_collection_stats(self) -> Dict[str, Any]:
         """
-        Get collection statistics.
+        Return statistics about the current collection.
+
+        This method is required by RAGPipeline and
+        KnowledgeBaseManager.
         """
 
-        try:
-            all_docs = self.collection.get()
+        count = self.collection.count()
 
-            return {
-                "collection_name": self.collection_name,
-                "document_count": len(all_docs["ids"]),
-                "ids": all_docs["ids"][:10],
-            }
+        return {
+            "collection_name": self.collection_name,
+            "document_count": count,
+            "count": count,
+            "persist_directory": self.persist_directory,
+        }
 
-        except Exception:
-            logger.exception(
-                "Error getting collection stats"
-            )
-            raise
+    # =============================================================
+    # PERSIST
+    # =============================================================
 
-    def persist(self):
+    def persist(self) -> None:
         """
-        Compatibility method.
+        Persist the database.
 
         ChromaDB PersistentClient automatically persists changes.
-        No manual persist call is required.
+
+        This method exists for compatibility with the RAG pipeline.
         """
 
-        logger.info(
-            "ChromaDB persistence handled automatically"
+        # PersistentClient automatically writes changes.
+        # No explicit persist() is required in modern ChromaDB.
+        logger.debug(
+            "ChromaDB persistence handled automatically."
         )
+
+    # =============================================================
+    # DELETE COLLECTION
+    # =============================================================
+
+    def delete_collection(self) -> None:
+        """
+        Delete the current collection.
+        """
+
+        try:
+
+            self.client.delete_collection(
+                name=self.collection_name
+            )
+
+            logger.info(
+                "Deleted collection: %s",
+                self.collection_name,
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Error deleting collection"
+            )
+
+            raise
+
+    # =============================================================
+    # CLEAR COLLECTION
+    # =============================================================
+
+    def clear(self) -> None:
+        """
+        Delete all documents and recreate the collection.
+        """
+
+        try:
+
+            self.delete_collection()
+
+        except Exception:
+            # Collection may not exist.
+            logger.debug(
+                "Collection did not exist while clearing."
+            )
+
+        self.collection = (
+            self.client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={
+                    "description": (
+                        "RAG support documents"
+                    )
+                },
+            )
+        )
+
+        logger.info(
+            "Collection cleared: %s",
+            self.collection_name,
+        )
+
+    # =============================================================
+    # COMPATIBILITY ALIAS
+    # =============================================================
+
+    def clear_collection(self) -> None:
+        """
+        Compatibility method used by RAGPipeline.
+        """
+
+        self.clear()
+
+    # =============================================================
+    # HEALTH CHECK
+    # =============================================================
+
+    def health_check(self) -> bool:
+        """
+        Check whether ChromaDB is available.
+        """
+
+        try:
+
+            self.collection.count()
+
+            return True
+
+        except Exception:
+
+            logger.exception(
+                "ChromaDB health check failed"
+            )
+
+            return False
+
+    # =============================================================
+    # CLOSE
+    # =============================================================
+
+    def close(self) -> None:
+        """
+        Release resources where supported.
+
+        PersistentClient manages its own resources. This method is
+        provided so the service has a clean lifecycle API.
+        """
+
+        try:
+
+            # ChromaDB versions differ in how the underlying client
+            # exposes shutdown/close functionality.
+            close_method = getattr(
+                self.client,
+                "close",
+                None,
+            )
+
+            if callable(close_method):
+                close_method()
+
+        except Exception as e:
+
+            logger.debug(
+                "ChromaDB close completed with note: %s",
+                e,
+            )

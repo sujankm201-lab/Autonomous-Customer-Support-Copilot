@@ -19,3 +19,7 @@ env/
 
 # Docker
 docker-compose.override.yml
+
+# RAG generated data
+backend/data/chroma_db/
+backend/logs/
